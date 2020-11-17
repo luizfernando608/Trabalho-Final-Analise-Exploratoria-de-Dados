@@ -1,0 +1,399 @@
+---
+title: "Apresentacao Covid"
+author: "Lívia Meinhardt e Luiz Luz"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+library(geobr)
+library(dplyr)
+library(sf)
+library(ggplot2)
+library(ggpubr)
+library(plotly)
+library(gganimate)
+library(lubridate)
+library(ggthemes)
+library(rmapshaper)
+library(tidyverse)
+library(lubridate)
+library(reshape)
+library(ggrepel)
+
+
+limpa_especiais = function(vetor){
+  vetor = gsub("á","a",vetor)
+  vetor = gsub("é","e",vetor)
+  vetor = gsub("í","i",vetor)
+  vetor = gsub("ó","o",vetor)
+  vetor = gsub("ú","u",vetor)
+  vetor = gsub("â","a",vetor)
+  vetor = gsub("ê","e",vetor)
+  vetor = gsub("ô","o",vetor)
+  vetor = gsub("ã","a",vetor)
+  vetor = gsub("õ","o",vetor)
+  vetor = gsub("ç","c",vetor)
+  return(vetor)
+  
+}
+
+#mun <- read_municipality(code_muni="all", year=2016, simplified =TRUE)
+# carregando shape files de todos municipios do Brasil
+#mun2= mun
+
+#mun2 = rmapshaper::ms_simplify(mun2)
+load("mapas.RData")
+names(mun2)[2] = "municipio"
+mun2$municipio = tolower(mun2$municipio)
+mun2$municipio = limpa_especiais(mun2$municipio)
+mun2 = mun2 %>% mutate(municipioUF = paste(municipio,abbrev_state))
+
+
+covid = read.csv2("HIST_PAINEL_COVIDBR3.csv", encoding = 'UTF-8')
+names(covid)[1] = 'regiao'
+names(covid)[9] = tolower(names(covid)[9])
+covid$municipio = tolower(covid$municipio)
+covid$municipio = limpa_especiais(covid$municipio)
+covid$estado = toupper(covid$estado)
+```
+
+## Processo de Criação:
+
+A partir da nossa ideia inicial, explicitada no Briefing, comecamos tentando criar uma animação que contasse a história do Covid no Brasil, utilizando os dados dos óbitos. Após diveros impasses, encontramos o pacote geobr que disponibiliza os arquivos sf dos municípios, bem como queríamos. Além disso, utilizamos o pacote gganimate. Esse foi nosso resultado:
+
+```{r,echo=FALSE,warning = FALSE,message = FALSE}
+# animacao: mortes municipio 
+covidMunicipio = covid %>% filter(municipio != "") 
+covidMunicipio = data.frame(data = covidMunicipio$data,
+                            regiao = covidMunicipio$regiao,
+                            municipioUF = paste(covidMunicipio$municipio,covidMunicipio$estado),
+                            municipio = covidMunicipio$municipio,
+                            casosAcumulado =covidMunicipio$casosAcumulado,
+                            casosNovos = covidMunicipio$casosNovos, 
+                            obitosAcumulado = covidMunicipio$obitosAcumulado, 
+                            obitosNovos = covidMunicipio$obitosNovos,
+                            regiaoSaude =covidMunicipio$nomeRegiaoSaude)
+
+popu = read.csv2("estimativa2019.csv")
+names(popu)[1] = "UF"
+popu$municipio = tolower(popu$municipio)
+popu$UF = toupper(popu$UF)
+popu = popu %>% mutate(municipioUF = paste(municipio, UF))
+
+covidMunicipio$data = as.Date(dmy(covidMunicipio$data))
+
+covidMunicipio = left_join(x = covidMunicipio,y=popu, by="municipioUF") #unir os conjuntos de dados
+
+covidMunicipio$populacao = as.integer(covidMunicipio$populacao) 
+
+covidMunicipio = covidMunicipio %>% mutate(taxaObitos = log((obitosAcumulado/populacao)*100000)) 
+
+
+covidmap = left_join(x = mun2, y = covidMunicipio, by="municipioUF")
+
+
+p =ggplot(data = covidmap, colour =NA,group=regiaoSaude) + 
+  geom_sf(aes(fill = taxaObitos), colour = NA) + 
+  theme_void()+ theme(legend.text = element_blank())+
+  coord_sf(datum = NA)+
+  scale_fill_gradient(low = "#ffeeee", na.value = "#ffffff",  high="#ba0b0b")+
+  transition_manual(frames = data) + labs(title = "Dispersão e Evolução do Óbitos no Brasil", subtitle = "Escala de log, por 100 mil habitantes", tag = "Data: {current_frame}",fill="Obitos") 
+
+animate(p,duration = 60)
+
+```
+
+Apesar de termos gostado muito do resultado final da animação, percebemos que não é possível fazer análises aprofundadas da pandemia a partir da mesma. Portanto, partimos para a criação do gráfico de linhas que representa, também, os óbitos. Dessa vez, repartirmos por regiões utilizando o facet_wrap. Finalmente, após alcançarmos um resultado estático eficiente, adicionamos o ggplotly para adicionar a legenda das linhas cinza. 
+
+
+```{r,echo=FALSE,warning = FALSE,message = FALSE} 
+library(tidyverse)
+library(reshape)
+library(ggrepel)
+
+covid_linhas = covid %>% filter(municipio == "") %>% filter(estado != "") %>% filter(is.na(codmun))
+
+covid_linhas$populacaoTCU2019 = as.numeric(covid_linhas$populacaoTCU2019)
+covid_linhas <- covid_linhas %>% mutate(taxa_pop= obitosAcumulado/populacaoTCU2019)
+covid_linhas$data <- as.Date(dmy(covid_linhas$data))
+
+covid_linhas <- covid_linhas %>% mutate(label=ifelse(data==max(data), as.character(estado),NA_character_))
+options(scipen = 999)
+
+
+covid_linhas <- covid_linhas %>% mutate(Sigla=paste0(" ", estado))
+
+obitos <- ggplot(covid_linhas,aes(data,y=(taxa_pop*100000),label=Sigla))+
+  geom_smooth(aes(group=estado), method = "loess", se=F, color="grey", alpha=.5, size=.5) + 
+  xlim(as.Date("2020-04-01"),as.Date("2020-06-24")) + geom_smooth(method = "loess",se=F, size=1, color="red")+
+  facet_wrap(~regiao) + theme_minimal() +
+  scale_x_date(date_labels = ("%d/%m")) +
+  labs(x=NULL,y=NULL)+
+  scale_y_continuous(trans='log10') +
+  ggtitle("Comparativo dos obitos por estado", subtitle = "em escala logaritmica, por 100 mil habitantes")
+
+ggplotly(obitos, tooltip = "Sigla") 
+```
+
+Como gostamos do resultado do gráfico de linhas, respeitando nosso desejo inicial de trabalhar com mapas, fizemos as próxima visualizações. No fim, percebemos que acabaram servindo mais como gráficos informativos ou gráficos resumo dos dados do óbitos. Para isso, o conhecimento gerado com as duas visualizações iniciais das bibliotecas geobr e plotly foi bastante útil. 
+
+```{r,echo=FALSE,warning = FALSE,message = FALSE}
+covidEstado = covid %>% filter(municipio == "") %>% filter(estado != "") %>% filter(is.na(codmun))
+covidEstado$estado = toupper(covidEstado$estado)
+
+covidEstado$data = as.Date(dmy(covidEstado$data))
+
+covidEstado$estado = as.factor(covidEstado$estado)
+
+covidEstado = covidEstado %>% group_by(regiao,
+                                       estado,
+                                       nomeRegiaoSaude,
+                                       populacaoTCU2019,
+                                       municipio,
+                                       semanaepi) %>% 
+  summarize(obitosNovos = sum(obitosNovos),
+            obitosAcumulado = max(obitosAcumulado))
+
+covidEstado$populacaoTCU2019 = as.numeric(as.character(covidEstado$populacaoTCU2019))
+covidEstado = covidEstado %>% 
+  mutate(ultimoDado =NA, maximoDado = NA, semanapico=  NA, obitosAcumuladopico=NA)
+
+
+for(estado in levels(covidEstado$estado)){
+  condicao = covidEstado$estado == estado
+  coluna = covidEstado$obitosNovos
+  data = max(covidEstado$semanaepi) == covidEstado$semanaepi[condicao]
+  dadosltimadata = covidEstado$obitosNovos[condicao][data]
+  covidEstado$ultimoDado[condicao] = dadosltimadata
+  linhapico = coluna[condicao] == max(coluna[condicao])
+  maximoDado = rep(max(coluna[condicao]), length(coluna[condicao]))
+  semanapico = rep(max(covidEstado$semanaepi[linhapico]),length(coluna[condicao]))
+  obitospico = rep(max(covidEstado$obitosAcumulado[condicao]),length(coluna[condicao]))
+  covidEstado$maximoDado[condicao] = (maximoDado)
+  covidEstado$semanapico[condicao] = semanapico
+  covidEstado$obitosAcumuladopico[condicao] = obitospico
+}
+
+
+estado2 = mapaestado
+names(estado2)[2] = "estado"
+estado2 = rmapshaper::ms_simplify(estado2)
+covidmapestado = left_join(y=covidEstado,x=estado2,by="estado")
+
+ultima_semana = max(covidmapestado$semanaepi)
+
+covidmapestado = covidmapestado %>% filter(semanaepi==ultima_semana)
+
+covidmapestado$populacaoTCU2019 = as.numeric(as.character(covidmapestado$populacaoTCU2019))
+covidmapestado = covidmapestado %>% 
+  mutate(taxaobitos = log((obitosAcumulado/populacaoTCU2019)*100000))
+
+covidmapestado=covidmapestado %>% 
+  filter(semanaepi == max(semanaepi))
+
+covidmapestado <- covidmapestado %>% mutate(Sigla=paste0(" ",estado, "\n",
+                                       "Obitos Acumulados: ", obitosAcumulado))
+
+plotestatico = ggplot(covidmapestado,aes(geometry = geom, fill=taxaobitos, label=Sigla))+ 
+  geom_sf()+
+  scale_fill_gradient(low = "#ffeeee", high="#ba0b0b") + theme_void() + theme(legend.position = "none")+
+  labs(title = "Obitos por estados", subtitle = "Por 100 mil habitantes")
+
+ggplotly(plotestatico,tooltip = "Sigla")
+
+```
+
+```{r,echo=FALSE,warning = FALSE,message = FALSE}
+# mortes municipios 
+covid_2 <- read_delim("covid_novo.txt", ";", escape_double = FALSE, trim_ws = TRUE)
+
+covid_2 $municipio = tolower(covid_2 $municipio)
+covid_2 $municipio = limpa_especiais(covid_2 $municipio)
+covid_2 $estado = toupper(covid_2 $estado)
+
+covid_2 = covid_2 %>% mutate(municipioUF = paste(municipio,estado))
+
+covidmap = left_join(x = mun2, y = covid_2, by="municipioUF")
+
+covidmap <- covidmap  %>% mutate(Dados=paste0(" ",municipioUF, "\n", "Obitos: ", obitos, "\n", "Casos Confirmados: ", confirmados))
+covidmap$obitos[covidmap$obitos==0] = NA
+
+munmap <- covidmap %>%    ggplot(color=NA,group=MunicipioUF, 
+         aes(geometry = geom, 
+        fill = log((obitos/populacao)*100000), 
+        label=Dados),color=NA,size=0.1) + 
+  geom_sf(colour = NA) + 
+  theme_void()+
+  scale_fill_gradient(low = "#ffeeee",na.value = "white", high="#ba0b0b") + theme(legend.position = "none")+labs(title = "Mortes Acumuladas dos municípios Brasileiros",subtitle = "comparativo por 100 mil habitantes")
+
+ggplotly(munmap,tooltip = "Dados")
+```
+
+Em seguida, percebemos que para melhor compreender o comportamento do vírus no nosso país, precisávamos observar a taxa de crescimento e não somente os óbitos acumulados. Assim, as próximas visualizações foram geradas a partir desse entendimento. 
+
+Esses primeiros, consistem em gráficos de linhas que foram feitos de forma semelhante ao de linhas dos óbitos:
+
+```{r,echo=FALSE,warning = FALSE,message = FALSE}
+#taxas linhas
+ggplot(covid_linhas,aes(data,y=(obitosNovos/populacaoTCU2019)*100000))+ 
+  geom_smooth(aes(group=estado),se=F, size=.5, alpha=.75, color="grey") +
+  geom_smooth(method = "loess",se=F, size=1, color="red")+
+  facet_wrap(~regiao) + 
+  theme_minimal() +
+  theme(axis.ticks.y = element_blank(), 
+        axis.title.y = element_blank(), 
+        axis.text.y = element_blank(),
+        axis.title.x = element_blank())+
+  labs(title = "Taxa de crescimento estados", subtitle = "A cada 100 mil habitantes")
+
+#Amazonas
+covid_linhas %>% filter(regiao == "Norte") %>% filter(estado != "") %>% 
+  mutate(destaque = ifelse(estado=="AM", "Amazonas"," ")) %>% 
+  ggplot(aes(data,y=(obitosNovos/populacaoTCU2019)*100000))+ 
+  geom_smooth(aes(group=estado, color=destaque, size=destaque),se=F) +
+  scale_color_manual(values =c("lightgrey","red")) + 
+  scale_size_manual(values=c(.75,1.5))+
+  theme_minimal() +
+  theme(legend.position = "none", axis.title.x = element_blank(), axis.text.y = element_blank())+
+  labs(title = "Taxas Obito Amazonas", subtitle = "Comparação com a região Norte", y="A cada 100 mil habitantes") 
+  
+# Rio
+covid_linhas %>% filter(regiao == "Sudeste") %>% filter(estado != "") %>% 
+  mutate(destaque = ifelse(estado=="RJ", "Rio"," ")) %>% 
+  ggplot(aes(data,y=(obitosNovos/populacaoTCU2019)*100000))+ 
+  geom_smooth(aes(group=estado, color=destaque, size=destaque),se=F) +
+  scale_color_manual(values =c("lightgrey","red")) + 
+  scale_size_manual(values=c(.75,1.5))+
+  theme_minimal() +
+  theme(legend.position = "none", axis.title.x = element_blank(), axis.text.y = element_blank())+
+  labs(title = "Taxas Obito Estado do Rio de Janeiro", subtitle = "Comparação com a região Sudeste", y="A cada 100 mil habitantes") 
+
+#Sao Paulo
+covid_linhas %>% filter(regiao == "Sudeste") %>% filter(estado != "") %>% 
+  mutate(destaque = ifelse(estado=="SP", "SP"," ")) %>% 
+  ggplot(aes(data,y=(obitosNovos/populacaoTCU2019)*100000))+ 
+  geom_smooth(aes(group=estado, color=destaque, size=destaque),se=F) +
+  scale_color_manual(values =c("lightgrey","red")) + 
+  scale_size_manual(values=c(.75,1.5))+
+  theme_minimal() +
+  theme(legend.position = "none", axis.title.x = element_blank(), axis.text.y = element_blank())+
+  labs(title = "Taxas Obito Estado de São Paulo", subtitle = "Comparação com a região Sudeste", y="A cada 100 mil habitantes") 
+
+#todos os estados
+covid_linhas %>% filter(estado != "") %>%
+  ggplot(aes(data,y=(obitosNovos/populacaoTCU2019)*100000))+ 
+  geom_smooth(aes(group=estado),se=F, color="red") + facet_wrap(~estado) + theme_minimal() +
+  theme(axis.ticks.y = element_blank(), 
+        axis.title = element_blank(), 
+        axis.text = element_blank())+
+  labs(title = "Taxa de crescimento dos óbitos por estados", subtitle = "A cada 100 mil habitantes")
+
+```
+
+Ao observar as taxas de todos os estados separadamente, percebemos que o gráfico de linhas tem um foco analisar o comportamento da taxa de crescimento nos Estados. Porém, não era possível, a partir desses, saber quando tinha se dado os picos (naqueles que já passaram dessa fase) de forma normlizada (isso é, contando o primeiro caso de óbito como dia 0 para todos). Desse pensamento, surgiu a ideia de fazer o heatmap. A maior dificuldade aqui, foi encontrar uma escala de cor que ressaltasse o que queríamos e fazer a reordenação dos dados. Para esse último problema, adicionamos ao conjunto de dados a semana que ocorreu o pico (ou o número máximo até a data) de cada estado e usamos o reorder nessa variável, obtendo o seguinte resultado:  
+
+
+```{r,echo=FALSE,warning = FALSE,message = FALSE}
+#heatmap picos
+covidEstado = covid %>% filter(municipio == "") %>% filter(estado != "") %>% filter(is.na(codmun))
+covidEstado$estado = toupper(covidEstado$estado)
+
+covidEstado$data = as.Date(dmy(covidEstado$data))
+
+covidEstado$estado = as.factor(covidEstado$estado)
+
+covidEstado = covidEstado %>% group_by(regiao,
+                                       estado,
+                                       nomeRegiaoSaude,
+                                       populacaoTCU2019,
+                                       municipio,
+                                       semanaepi) %>% 
+  summarize(obitosNovos = sum(obitosNovos),
+            obitosAcumulado = max(obitosAcumulado))
+
+covidEstado$populacaoTCU2019 = as.numeric(as.character(covidEstado$populacaoTCU2019))
+covidEstado = covidEstado %>% 
+  mutate(ultimoDado =NA, maximoDado = NA, semanapico=  NA, obitosAcumuladopico=NA)
+
+
+for(estado in levels(covidEstado$estado)){
+  condicao = covidEstado$estado == estado
+  coluna = covidEstado$obitosNovos
+  data = max(covidEstado$semanaepi) == covidEstado$semanaepi[condicao]
+  dadosltimadata = covidEstado$obitosNovos[condicao][data]
+  covidEstado$ultimoDado[condicao] = dadosltimadata
+  linhapico = coluna[condicao] == max(coluna[condicao])
+  maximoDado = rep(max(coluna[condicao]), length(coluna[condicao]))
+  semanapico = rep(max(covidEstado$semanaepi[linhapico]),length(coluna[condicao]))
+  obitospico = rep(max(covidEstado$obitosAcumulado[condicao]),length(coluna[condicao]))
+  covidEstado$maximoDado[condicao] = (maximoDado)
+  covidEstado$semanapico[condicao] = semanapico
+  covidEstado$obitosAcumuladopico[condicao] = obitospico
+}
+
+covidEstado <- covidEstado %>% mutate(Sigla=paste0(" ", estado, "\n",
+                                    "Obitos Acumulados: ",obitosAcumulado,"\n",
+                                    "Obitos Novos (Semana): ", obitosNovos, "\n",
+                                    "Semana Epidemiologica: ", semanaepi))
+
+plotheat = ggplot(covidEstado, aes(x = semanaepi, y = reorder(estado, -semanapico),label=Sigla)) + 
+  geom_raster(aes(fill=(obitosNovos/maximoDado+1)))+
+  scale_fill_gradient(low = "#ffeeee", high="#ba0b0b")+guides(color='none')+ theme_classic()+
+  theme(legend.position = 'none') + labs(title = "Picos da taxa de Óbito", 
+                                         subtitle = "Vermelho=maior taxa", 
+                                         x="Semana Epidemiologica",
+                                         y=NULL)
+
+
+ggplotly(plotheat,tooltip = "Sigla")
+
+```
+
+Continuando com o uso de mapas, fizemos mais uma visualização resumo das taxas de crescimento: destacamos a taxa de crescimento mais recente (última atualização 24 de junho) de cada estado. Fazendo assim, um comparativo entre os mesmos. Esse mapa, serve apenas como um detalhe adicional da análise das taxas.
+
+```{r,echo=FALSE,warning = FALSE,message = FALSE}
+
+#picos mapa
+
+plotestado = ggplot(covidmapestado, aes(geometry=geom, fill=(obitosNovos/maximoDado+1),label=Sigla))+
+  geom_sf()+
+  scale_fill_gradient(low = "#ffeeee", high="#ba0b0b")+ 
+  theme(legend.position = 'none') + theme_void() + guides(fill="none") +labs(title = "Taxa de Obitos no momento atual")
+  
+
+
+ggplotly(plotestado,tooltip = "Sigla")
+
+```
+
+Por último, surgiu a ideia de destacar a diferença das taxas em relação ao período de pico dos estados que parecem já ter passado dessa fase. Assim, um gráfico de barras pareceu bastante efetivo para tal comparação. O que nos surpreendeu bastante foi que diferentemente da nossa ideia original de trabalhar, principalmente, com mapas e animações, que são bem complexas, o simples gráfico de barras, nos permitiu fazer análises aprofundadas da pandemia (que foram explicadas no vídeo). 
+
+
+```{r,echo=FALSE,warning = FALSE,message = FALSE}
+#taxas no pico
+
+covidEstado = covidEstado %>% mutate(taxaNoPico = (obitosAcumuladopico/populacaoTCU2019)*10^5)
+plotbar = covidEstado %>% 
+  filter(semanaepi == max(semanaepi)) %>%
+  filter(estado %in% c('AM','PE','RJ','PA','CE','AL','AC','RR','PB','MA'))%>%
+  ggplot(aes(x = reorder(estado, -taxaNoPico),y=taxaNoPico)) + 
+  geom_bar(aes(fill=taxaNoPico), stat='identity')+
+  geom_text(aes(label = round(taxaNoPico,0)),nudge_y = 2)+
+  scale_fill_gradient(low = "#ffeeee", high="#ba0b0b")+
+  guides(color='none')+
+  theme(legend.position = 'none',panel.background = element_blank(),axis.ticks.y = element_blank(),axis.text.y = element_blank())+labs(x=NULL, y="Taxas",title = "Comparativo das taxas durante pico",subtitle = "Obitos por 100 mil habitantes")
+
+ggplotly(plotbar, tooltip = "taxaNoPico")
+
+
+```
+
+## Conclusão:
+
+Com todas essas visualizações criadas, aprendemos a utilizar diferentes ferramentas, como os dados do tipo shape file, a biblioteca plotly, gganimate, além de aprofundar muito mais nosso conhecimento no GGPLOT2 (bem como outras bibliotecas auxiliares). Além disso, percebemos que os mapas (que na ideia original seriam os principais atores do nosso projeto) contribuiram de forma inesperada, auxiliando muito na compreenção do dado e ajudando a elaboração de novas e diferentes visualizações. 
+
+## Video (enfatizando a análise das visualizações propostas): 
+
+https://youtu.be/SFKChNxgC4Y 
+
